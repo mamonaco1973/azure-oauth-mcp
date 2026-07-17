@@ -26,8 +26,14 @@ resource "azurerm_cosmosdb_account" "mcp" {
     name = "EnableServerless"
   }
 
+  # Strong, not Session: the OAuth handshake writes a code on one function
+  # instance and reads it back on another (Flex Consumption scales out, and each
+  # instance has its own Cosmos session). Session consistency only guarantees
+  # read-your-writes within a single session, so a cross-instance read of the
+  # just-written one-time code can miss and fail the token exchange. Strong is
+  # free on a single-region account and removes the race.
   consistency_policy {
-    consistency_level = "Session"
+    consistency_level = "Strong"
   }
 
   geo_location {
