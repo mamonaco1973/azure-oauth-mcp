@@ -2,9 +2,9 @@
 
 An Azure Resource Graph API exposed as a **remote MCP connector** secured with
 **Microsoft Entra OAuth**. Claude connects directly to a remote `/mcp` endpoint,
-the user logs in with any work or school Microsoft account, and the tools run —
-**no local proxy, no service-principal secret on your laptop, nothing to
-configure but a URL.**
+the user logs in with any Microsoft account (work, school, or personal), and the
+tools run — **no local proxy, no service-principal secret on your laptop,
+nothing to configure but a URL.**
 
 > This is the OAuth port of `azure-serverless-mcp`, which kept a local proxy that
 > authenticated with a long-lived service-principal client secret embedded in the
@@ -38,7 +38,7 @@ Claude (claude.ai / Claude Desktop) — remote MCP client
      │  1. probe:     POST /mcp with no token → 401 + WWW-Authenticate
      │  2. discover:  GET  /.well-known/oauth-authorization-server   (RFC 8414)
      │  3. register:  POST /oauth/register                           (RFC 7591)
-     │  4. login:     GET  /authorize → login.microsoftonline.com → /oauth/callback
+     │  4. login:     GET  /authorize → login.microsoftonline.com/common → /oauth/callback
      │  5. token:     POST /oauth/token   (az_ code → Entra access token)
      │  6. use:       POST /mcp  (Authorization: Bearer <entra access token>)
      ▼
@@ -68,7 +68,7 @@ the root, so the prefix is removed. The connector URL is
    `/oauth/register`, Claude has no `client_id` — same gap as AWS AgentCore and
    Google. The `/oauth/register` shim closes it.
 
-The token handed to Claude is a **genuine Entra access token**. No custom crypto.
+The token handed to Claude is a **genuine Entra id_token**. No custom crypto.
 
 ---
 
@@ -82,16 +82,21 @@ the AWS and GCP ports). Auth is in `mcp.py`:
 - Claude probes `/mcp` **unauthenticated on purpose**, to read the
   `WWW-Authenticate` header that points at the login.
 
+**The bearer is the id_token.** Personal Microsoft accounts cannot consent to a
+custom `api://` scope, so the broker requests only OIDC scopes and hands Claude
+the Entra **id_token** (aud = this app's client_id).
+
 **Token validation pins the audience, not the issuer.** `mcp._resolve_user`
 verifies the RS256 signature against Entra's **common** JWKS and requires
-`aud ∈ {client_id, api://client_id}`. It deliberately does **not** pin the
-issuer: the app is **multitenant** (`AzureADMultipleOrgs`), so tokens arrive
-from many tenants with different issuers. The audience pin is what stops a token
-minted for some *other* Entra app from calling these tools.
+`aud == client_id`. It deliberately does **not** pin the issuer: the app allows
+any Microsoft account (`AzureADandPersonalMicrosoftAccount`), so tokens arrive
+from many tenants — plus the personal-account authority — with different
+issuers. The audience pin is what stops a token minted for some *other* Entra
+app from calling these tools.
 
-**AuthN only, no authZ.** Every authenticated Microsoft work/school user is
-authorized — from *any* tenant. That is fine for a demo; it is not fine for
-anything real. To lock it down, filter on the `tid` (tenant) or
+**AuthN only, no authZ.** Every authenticated Microsoft account is authorized —
+from *any* tenant, personal ones included. That is fine for a demo; it is not
+fine for anything real. To lock it down, filter on the `tid` (tenant) or
 `preferred_username` claim in `_resolve_user`.
 
 ---
@@ -128,8 +133,10 @@ Unlike GCP — where the OAuth client is a manual console step — **Terraform
 creates the whole Entra app** and wires its redirect URI to the function's own
 hostname. There is no Azure Portal step.
 
-- `sign_in_audience = "AzureADMultipleOrgs"` — any work/school tenant.
-- Exposes an API scope `api://<client_id>/mcp.access`, `requested_access_token_version = 2`.
+- `sign_in_audience = "AzureADandPersonalMicrosoftAccount"` — any Microsoft
+  account (work, school, personal).
+- `requested_access_token_version = 2` (required for personal accounts). No API
+  scope — the broker uses OIDC scopes and validates the id_token.
 - `web.redirect_uris` = the function's `/oauth/callback`.
 - A client secret → Key Vault (never a plaintext app setting).
 
@@ -157,10 +164,11 @@ startup — the portal shows the reference, not the value.
 
 - **routePrefix must be empty.** Leave the default `/api` and MCP discovery
   breaks — the `.well-known` docs would be under `/api`, where no client looks.
-- **Audience may be the GUID or `api://<guid>`.** v2 tokens for a custom scope
-  usually carry the client_id GUID; `_resolve_user` accepts both forms.
-- **Do not pin the issuer.** The app is multitenant; pinning one issuer breaks
-  every tenant but your own.
+- **Personal accounts require `requested_access_token_version = 2`** on the app,
+  and cannot consent to a custom `api://` scope — which is why the bearer is the
+  id_token, not a custom-scope access token.
+- **Do not pin the issuer.** The app allows any Microsoft account; pinning one
+  issuer breaks every account but your own tenant's.
 - **Key Vault soft-delete.** `destroy.sh` purges the vault (main.tf enables
   `purge_soft_delete_on_destroy`) so a re-apply doesn't hit a name conflict.
 - **Don't attach Easy Auth / an authorizer to `/mcp`.** Same lesson as the

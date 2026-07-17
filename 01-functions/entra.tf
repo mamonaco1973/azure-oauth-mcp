@@ -25,6 +25,12 @@ resource "azuread_application" "mcp" {
   display_name     = "oauth-mcp"
   sign_in_audience = "AzureADandPersonalMicrosoftAccount"
 
+  # Entra requires v2 tokens for apps that allow personal accounts. We expose no
+  # scope — the broker only requests OIDC scopes and validates the id_token.
+  api {
+    requested_access_token_version = 2
+  }
+
   # Confidential client: Entra returns the auth code to our own fixed callback.
   # The hostname is derived from the random suffix (not the function resource) to
   # avoid a dependency cycle — functions.tf reads this app's client_id in turn.

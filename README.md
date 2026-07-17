@@ -2,7 +2,7 @@
 
 Connect Claude directly to your Azure subscription. No local proxy. No
 service-principal secret in a config file. You paste one URL, log in with any
-work or school Microsoft account, and the tools work.
+Microsoft account — work, school, or personal — and the tools work.
 
 This is the OAuth port of `azure-serverless-mcp`, which kept a local proxy that
 authenticated with a **long-lived service-principal client secret embedded in
@@ -15,7 +15,7 @@ JSON file. This version deletes it.
 | Credential on disk | SP client secret, never expires | None |
 | Who is the caller? | Always the same service principal | The actual human, via Entra |
 | Auth enforced by | The code (in-code JWT) | The code (in-code JWT) |
-| Identity model | one tenant, one SP | any work/school tenant, real users |
+| Identity model | one tenant, one SP | any Microsoft account, real users |
 
 ---
 
@@ -53,12 +53,15 @@ Two gaps, neither ours to fix upstream:
    pasting a client ID and secret by hand. That is the exact gap AWS AgentCore
    and Google leave open too. No cloud closes it for you.
 
-### Multitenant — "sign in with any Microsoft work account"
+### Multitenant — "sign in with any Microsoft account"
 
-The Entra app is registered `AzureADMultipleOrgs` and the broker uses the
-`/organizations` authority, so a user from **any** work or school Entra tenant
-can sign in. Token validation pins the **audience** (this app) but not the
-**issuer** — because with many tenants there is no single issuer to pin.
+The Entra app is registered `AzureADandPersonalMicrosoftAccount` and the broker
+uses the `/common` authority, so **any** Microsoft account — work, school, or
+personal — can sign in. Personal accounts cannot consent to a custom `api://`
+scope, so the broker requests only OIDC scopes and hands Claude the **id_token**;
+its audience is this app's client_id. Token validation pins that **audience**
+but not the **issuer** — with many tenants (plus the personal-account authority)
+there is no single issuer to pin.
 
 ---
 
@@ -98,9 +101,8 @@ the model narrates a text table better than it parses one.
 ```
 
 **There is no console step.** Terraform creates the Entra app registration,
-exposes its API scope, wires its redirect URI to the function's own hostname,
-and stores its secret in Key Vault. `apply.sh` prints the `/mcp` URL when it
-finishes.
+wires its redirect URI to the function's own hostname, and stores its secret in
+Key Vault. `apply.sh` prints the `/mcp` URL when it finishes.
 
 Then in Claude: **Settings → Connectors → Add custom connector**, paste the URL.
 Claude discovers the authorization server, registers itself, and sends you to
@@ -112,17 +114,18 @@ Microsoft to log in. That is the entire configuration.
 
 **It authenticates. It does not authorize.**
 
-Every authenticated Microsoft work/school user is authorized — from *any*
-tenant, because the app is multitenant. There is no allow-list. That is an
-acceptable trade in a demo and a bad one anywhere else — to lock it down, filter
-on the `tid` (tenant) or `preferred_username` claim in `mcp._resolve_user`.
+Every authenticated Microsoft account is authorized — from *any* tenant, and
+personal accounts too, because the app is multitenant. There is no allow-list.
+That is an acceptable trade in a demo and a bad one anywhere else — to lock it
+down, filter on the `tid` (tenant) or `preferred_username` claim in
+`mcp._resolve_user`.
 
 Three things this build gets right:
 
-**The token's audience is pinned.** `_resolve_user` rejects any token whose
-`aud` is not this app (`client_id` or `api://client_id`). Without it, a valid
-Entra token minted for a *different* app would pass — the multitenant JWKS
-validates the signature regardless of which app requested the token.
+**The token's audience is pinned.** `_resolve_user` rejects any id_token whose
+`aud` is not this app's `client_id`. Without it, a valid Entra token minted for
+a *different* app would pass — the multitenant JWKS validates the signature
+regardless of which app requested the token.
 
 **Both secrets live in Key Vault** — the Entra client secret and the Cosmos
 connection string — as `@Microsoft.KeyVault(...)` references, not plaintext app
@@ -138,8 +141,10 @@ require a token, and Claude probes `/mcp` unauthenticated on purpose to read the
 
 - **`host.json` sets `routePrefix: ""`** so the routes are at the root. With the
   default `/api` prefix, MCP discovery breaks.
-- **Don't pin the issuer** in token validation — the app is multitenant.
+- **Don't pin the issuer** in token validation — the app is multitenant and
+  accepts personal accounts, so tokens come from many issuers.
 - **Key Vault soft-delete** — `destroy.sh` purges the vault so a re-apply
   doesn't hit a name conflict.
-- **Entra token audience** can be the client_id GUID or `api://<guid>` depending
-  on configuration; the validator accepts both.
+- **The bearer is the id_token, not an access token.** Personal Microsoft
+  accounts cannot consent to a custom `api://` scope, so the broker validates
+  the id_token (`aud` = client_id) instead.
