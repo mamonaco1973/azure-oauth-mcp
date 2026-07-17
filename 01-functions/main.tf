@@ -42,7 +42,7 @@ variable "location" {
 
 data "azurerm_client_config" "current" {}
 
-resource "azurerm_resource_group" "serverless_mcp" {
-  name     = "serverless-mcp-rg"
+resource "azurerm_resource_group" "mcp" {
+  name     = "oauth-mcp-rg"
   location = var.location
 }

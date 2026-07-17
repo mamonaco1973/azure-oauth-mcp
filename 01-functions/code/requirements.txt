@@ -1,6 +1,7 @@
 azure-functions
 azure-mgmt-resourcegraph
 azure-identity
+azure-cosmos
 PyJWT
 cryptography
 requests

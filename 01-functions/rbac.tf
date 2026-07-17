@@ -3,5 +3,5 @@
 resource "azurerm_role_assignment" "rg_reader" {
   scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
   role_definition_name = "Reader"
-  principal_id         = azurerm_function_app_flex_consumption.serverless_mcp.identity[0].principal_id
+  principal_id         = azurerm_function_app_flex_consumption.mcp.identity[0].principal_id
 }

@@ -1,210 +1,145 @@
-# Azure Serverless MCP — Resource Graph API
+# Azure OAuth MCP — a remote MCP server on Azure Functions, secured with Entra
 
-This project delivers a **serverless MCP (Model Context Protocol) backend** on
-Azure that lets an AI assistant query Azure resource inventory in plain English.
-Seven Azure Functions expose resource query tools behind an **HTTP API** secured
-with **Entra ID Bearer token authentication**. A lightweight local proxy acquires
-tokens and forwards MCP calls to the Function App, making the remote serverless
-backend completely transparent to the AI caller.
+Connect Claude directly to your Azure subscription. No local proxy. No
+service-principal secret in a config file. You paste one URL, log in with any
+work or school Microsoft account, and the tools work.
 
-It uses **Terraform** and **Python (azure-mgmt-resourcegraph)** to provision and
-deploy the backend, and a **PowerShell or Bash proxy script** to bridge the MCP
-stdio transport to the authenticated HTTP API.
+This is the OAuth port of `azure-serverless-mcp`, which kept a local proxy that
+authenticated with a **long-lived service-principal client secret embedded in
+the Claude Desktop config** — one static credential for all access, sitting in a
+JSON file. This version deletes it.
 
-![diagram](azure-serverless-mcp.png)
+| | Proxy build | This build |
+|---|---|---|
+| Client setup | Install proxy, edit JSON config, hold a secret | Paste one URL |
+| Credential on disk | SP client secret, never expires | None |
+| Who is the caller? | Always the same service principal | The actual human, via Entra |
+| Auth enforced by | The code (in-code JWT) | The code (in-code JWT) |
+| Identity model | one tenant, one SP | any work/school tenant, real users |
 
-This design follows a **serverless MCP architecture** where the AI thinks it is
-talking to a local tool server, while all tool logic runs in Azure Functions
-querying the Azure Resource Graph API. Entra ID enforces Bearer token
-authentication on every route, and the proxy handles token acquisition and caching.
+---
 
-Key capabilities demonstrated:
+## Architecture
 
-1. **Serverless MCP Tools** – Seven Function-backed resource query tools exposed
-   as a standard MCP tool server, invokable by any MCP-compatible AI client.
-2. **Entra ID Bearer Auth** – All routes require a valid JWT validated in-code
-   against Azure AD's JWKS endpoint. Unsigned requests are rejected before any
-   query runs.
-3. **Self-Configuring Proxy** – At startup the proxy calls `GET /tools`
-   (authenticated) to load route mappings and tool schemas from the backend. No
-   tool definitions are hardcoded in the proxy — add a tool in `function_app.py`,
-   redeploy, and the proxy picks it up automatically on next start.
-4. **Generic Proxy Pattern** – The proxy contains no tool-specific logic. Point
-   it at a different `MCP_API_ENDPOINT` to get a completely different tool set.
-5. **Managed Identity** – The Function App queries Resource Graph using a
-   System-Assigned Managed Identity with `Reader` on the subscription. No
-   credentials in code or app settings.
-6. **Infrastructure as Code** – Terraform provisions all Functions, Entra app
-   registrations, service plan, and RBAC assignments in a single apply.
+```
+Claude (claude.ai / Claude Desktop)
+     │  1. probe:     POST /mcp with no token → 401 + WWW-Authenticate
+     │  2. discover:  GET  /.well-known/oauth-authorization-server   (RFC 8414)
+     │  3. register:  POST /oauth/register                           (RFC 7591)
+     │  4. login:     GET  /authorize → login.microsoftonline.com → /oauth/callback
+     │  5. token:     POST /oauth/token
+     │  6. use:       POST /mcp  (Bearer <entra access token>)
+     ▼
+Azure Function (Flex Consumption) — one function, public, auth enforced in code
+     ├── oauth.py   OAuth broker  ── Cosmos DB (transient login state, 5-min TTL)
+     ├── mcp.py     JSON-RPC; validates the Bearer token against Entra's JWKS
+     └── tools.py   7 Resource Graph tools, called in-process
+                    ▼
+     Azure Resource Graph API   (Managed Identity, subscription Reader)
+```
 
-Together, these components form a **reference architecture for serverless MCP
-tool backends on Azure** — demonstrating how AI tools can be centrally deployed,
-versioned, and secured without requiring local runtimes on the caller's machine.
+The function plays **two roles at once**. To Claude it *is* the OAuth
+authorization server. To Microsoft Entra it is an ordinary OAuth *client*.
+
+### Why a broker, and not just "point Claude at Entra"?
+
+Two gaps, neither ours to fix upstream:
+
+1. **claude.ai's redirect URI** isn't one Entra will accept, and Entra requires
+   exact-match redirect URIs. The broker registers only its own fixed
+   `/oauth/callback` and carries Claude's URL through Cosmos.
+2. **Entra has no dynamic client registration** (RFC 7591). Without a
+   `/oauth/register` endpoint, Claude has no `client_id` — and the user ends up
+   pasting a client ID and secret by hand. That is the exact gap AWS AgentCore
+   and Google leave open too. No cloud closes it for you.
+
+### Multitenant — "sign in with any Microsoft work account"
+
+The Entra app is registered `AzureADMultipleOrgs` and the broker uses the
+`/organizations` authority, so a user from **any** work or school Entra tenant
+can sign in. Token validation pins the **audience** (this app) but not the
+**issuer** — because with many tenants there is no single issuer to pin.
+
+---
+
+## The tools
+
+| Tool | Operation |
+|---|---|
+| `list_virtual_machines` | All VMs with size, resource group, location |
+| `list_resource_groups` | All RGs with location and tag count |
+| `count_resources_by_type` | Ranked inventory summary |
+| `find_resources_by_tag` | Resources matching a tag key+value |
+| `list_public_ip_addresses` | All public IPs with allocation method |
+| `find_resources_by_resource_group` | Resources in a named RG |
+| `find_resources_by_region` | Resources in a named region |
+
+Responses are pre-formatted plain text — Resource Graph returns nested JSON, and
+the model narrates a text table better than it parses one.
+
+---
 
 ## Prerequisites
 
-* An Azure subscription
-* [Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
-* [Install Terraform](https://developer.hashicorp.com/terraform/install)
-* `jq` and `zip` in PATH (used by `apply.sh` and `validate.sh`)
-* Service principal with Contributor rights for Terraform deployment
-* Environment variables set:
-  ```
-  ARM_CLIENT_ID
-  ARM_CLIENT_SECRET
-  ARM_SUBSCRIPTION_ID
-  ARM_TENANT_ID
-  ```
+- `az`, `terraform`, `jq`, `zip` in PATH
+- An Azure subscription, and a service principal with rights to create the
+  resources below (Contributor + the ability to create Entra app registrations)
+- Environment variables: `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`,
+  `ARM_SUBSCRIPTION_ID`, `ARM_TENANT_ID`
 
-## Download this Repository
+---
+
+## Deploy
 
 ```bash
-git clone https://github.com/mamonaco1973/azure-serverless-mcp.git
-cd azure-serverless-mcp
+./apply.sh     # full deploy + smoke test + prints the connector URL
+./validate.sh  # re-run the handshake / auth-boundary checks
+./destroy.sh   # tear it down (Key Vault purged)
 ```
 
-## Build the Code
+**There is no console step.** Terraform creates the Entra app registration,
+exposes its API scope, wires its redirect URI to the function's own hostname,
+and stores its secret in Key Vault. `apply.sh` prints the `/mcp` URL when it
+finishes.
 
-Run [check_env](check_env.sh) to validate your environment, then run
-[apply](apply.sh) to provision the infrastructure.
-
-```bash
-~/azure-serverless-mcp$ ./apply.sh
-NOTE: Running environment validation...
-NOTE: az found.
-NOTE: terraform found.
-NOTE: jq found.
-NOTE: zip found.
-NOTE: Deploying Azure Functions infrastructure...
-...
-NOTE: Deployment complete.
-```
-
-### Build Results
-
-When the deployment completes, the following resources are created in the
-`serverless-mcp-rg` resource group:
-
-- **Core Infrastructure:**
-  - Fully serverless — no VMs, containers, or VNet required
-  - Single-phase Terraform deploy from the `01-functions` directory
-  - FC1 (Flex Consumption) service plan — scales to zero when idle
-
-- **Security & Auth:**
-  - `serverless-mcp-api` Entra app registration — defines the token audience
-  - `serverless-mcp-proxy` Entra service principal — identity the proxy authenticates as
-  - JWT validated in-code (RS256, Azure AD JWKS) — FC1 does not support Easy Auth
-  - Function App Managed Identity with `Reader` on the subscription for Resource Graph
-
-- **Azure Functions:**
-  - Eight Python 3.11 handlers in a single `function_app.py`
-  - `GET /tools` — discovery endpoint; returns tool registry for proxy self-config
-  - Seven `POST /resources/*` routes — one per MCP tool
-
-- **MCP Proxy Scripts:**
-  - `02-proxy/proxy.ps1` — Windows PowerShell proxy with Bearer token management
-  - `02-proxy/proxy.sh` — Bash equivalent (Linux / macOS / Git Bash)
-  - Both implement full MCP JSON-RPC 2.0 stdio transport with token caching and
-    proactive refresh 60 seconds before expiry
-
-- **Claude Desktop Integration:**
-  - `apply.sh` generates `02-proxy/claude_desktop_config_ps1.json` and
-    `02-proxy/claude_desktop_config_sh.json` directly from Terraform outputs —
-    replace `REPLACE_WITH_ABSOLUTE_PATH` with your local path and copy to
-    `%APPDATA%\Claude\claude_desktop_config.json`, then restart Claude Desktop
-
-- **Automation & Validation:**
-  - `apply.sh`, `destroy.sh`, `check_env.sh`, and `validate.sh` automate the
-    full lifecycle — no manual portal steps required
+Then in Claude: **Settings → Connectors → Add custom connector**, paste the URL.
+Claude discovers the authorization server, registers itself, and sends you to
+Microsoft to log in. That is the entire configuration.
 
 ---
 
-## MCP Tools
+## Security — what this does and does not do
 
-The **Azure Resource MCP API** exposes seven tools through **Azure Functions**.
-Four tools take no input parameters; three accept parameters to filter results.
-All responses are plain-text summaries suitable for direct AI narration.
+**It authenticates. It does not authorize.**
 
-> All routes require a valid **Entra ID Bearer token** scoped to
-> `{serverless-mcp-api-client-id}/.default`. The proxy acquires and caches this
-> token automatically.
+Every authenticated Microsoft work/school user is authorized — from *any*
+tenant, because the app is multitenant. There is no allow-list. That is an
+acceptable trade in a demo and a bad one anywhere else — to lock it down, filter
+on the `tid` (tenant) or `preferred_username` claim in `mcp._resolve_user`.
 
-### Discovery Endpoint
+Three things this build gets right:
 
-The proxy calls `GET /tools` at startup to self-configure. `function_app.py`
-returns `TOOL_REGISTRY` — the single source of truth for all tool metadata:
+**The token's audience is pinned.** `_resolve_user` rejects any token whose
+`aud` is not this app (`client_id` or `api://client_id`). Without it, a valid
+Entra token minted for a *different* app would pass — the multitenant JWKS
+validates the signature regardless of which app requested the token.
 
-```json
-[
-  {
-    "name": "list_virtual_machines",
-    "description": "Lists all virtual machines in the subscription...",
-    "inputSchema": { "type": "object", "properties": {}, "required": [] },
-    "route": "/resources/virtual-machines"
-  },
-  ...
-]
-```
+**Both secrets live in Key Vault** — the Entra client secret and the Cosmos
+connection string — as `@Microsoft.KeyVault(...)` references, not plaintext app
+settings.
 
-The proxy strips `route` before forwarding tool schemas to the AI.
-
-### Tool Summary
-
-| Tool | Route | Input | Description |
-|------|-------|-------|-------------|
-| `list_virtual_machines` | `POST /resources/virtual-machines` | none | All VMs with name, size, resource group, location |
-| `list_resource_groups` | `POST /resources/resource-groups` | none | All resource groups with location and tag count |
-| `count_resources_by_type` | `POST /resources/count-by-type` | none | Ranked count of all resource types in the subscription |
-| `find_resources_by_tag` | `POST /resources/by-tag` | `tag_key`, `tag_value` | All resources matching a specific tag key/value pair |
-| `list_public_ip_addresses` | `POST /resources/public-ips` | none | All public IPs with allocation method and location |
-| `find_resources_by_resource_group` | `POST /resources/by-resource-group` | `resource_group` | All resources in a specific resource group |
-| `find_resources_by_region` | `POST /resources/by-region` | `region` | All resources in a specific Azure region |
-
-### Example Tool Responses
-
-**`list_resource_groups`**
-```
-Resource groups (4 total):
-
-  serverless-mcp-rg    centralus  (2 tags)
-  NetworkWatcherRG     centralus
-  mikes-solutions-org  westus
-  youtube-tenant-rg    centralus
-```
-
-**`count_resources_by_type`**
-```
-Resources by type (11 total):
-
-      5  microsoft.network/networkwatchers
-      2  microsoft.operationalinsights/workspaces
-      1  microsoft.web/sites
-      1  microsoft.keyvault/vaults
-      1  microsoft.storage/storageaccounts
-      1  microsoft.insights/components
-```
-
-**`find_resources_by_region`** (with `region: "centralus"`)
-```
-Resources in centralus (8 total):
-
-  serverless-mcp-ai        microsoft.insights/components    serverless-mcp-rg
-  serverless-mcp-func-xxxx microsoft.web/sites              serverless-mcp-rg
-  serverless-mcp-plan      microsoft.web/serverfarms        serverless-mcp-rg
-  ...
-```
+**The function is public, and that is correct.** The OAuth endpoints cannot
+require a token, and Claude probes `/mcp` unauthenticated on purpose to read the
+`WWW-Authenticate` pointer. So the door opens, and `mcp.py` enforces the token.
 
 ---
 
-### Request & Response Characteristics
+## Gotchas
 
-| Endpoint | Method | Auth | Request Body | Response |
-|----------|--------|------|--------------|----------|
-| `/tools` | `GET` | Bearer JWT | none | JSON array of tool descriptors |
-| `/resources/*` | `POST` | Bearer JWT | `{}` or `{"param": "value"}` | Plain-text human-readable summary |
-
----
-
-## MCP Proxy Request Flow
-
-![flow](azure-serverless-mcp-flow.png)
+- **`host.json` sets `routePrefix: ""`** so the routes are at the root. With the
+  default `/api` prefix, MCP discovery breaks.
+- **Don't pin the issuer** in token validation — the app is multitenant.
+- **Key Vault soft-delete** — `destroy.sh` purges the vault so a re-apply
+  doesn't hit a name conflict.
+- **Entra token audience** can be the client_id GUID or `api://<guid>` depending
+  on configuration; the validator accepts both.
