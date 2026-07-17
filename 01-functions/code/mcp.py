@@ -9,13 +9,16 @@
 # enforce it anyway — so unlike the AWS and GCP ports, there was no platform auth
 # to invert. It was always in-code here.)
 #
+# The bearer is the Entra id_token (see oauth.py — personal accounts can't get a
+# custom-scope access token, so we validate the id_token instead).
+#
 # Token validation, multitenant edition:
 #   * Signature — verified against Entra's common JWKS.
-#   * Audience  — MUST be this app (client_id GUID or api://client_id). This is
-#     what stops a token minted for some other Entra app from calling our tools.
-#   * Issuer    — deliberately NOT pinned. The app is multitenant, so tokens
-#     arrive from many tenants, each with a different issuer. Pinning one issuer
-#     would defeat "sign in with any work or school account".
+#   * Audience  — MUST be this app (client_id). This is what stops a token minted
+#     for some other Entra app from calling our tools.
+#   * Issuer    — deliberately NOT pinned. Any Microsoft account can sign in, so
+#     tokens arrive from many issuers (each tenant, plus the personal-account
+#     authority). Pinning one issuer would defeat "sign in with any account".
 #
 # Methods handled:
 #   initialize                 — capability handshake
@@ -70,9 +73,6 @@ def _resolve_user(token: str) -> dict:
         to a different application.
     """
     client_id = os.environ.get("MCP_ENTRA_CLIENT_ID", "")
-    # v2 access tokens for our custom scope carry aud = client_id GUID; some
-    # configurations carry the App ID URI. Accept either — both mean "us".
-    allowed_aud = [client_id, f"api://{client_id}"]
     try:
         header   = jwt.get_unverified_header(token)
         jwks     = _get_jwks()
@@ -82,12 +82,13 @@ def _resolve_user(token: str) -> dict:
         if key_data is None:
             return {}
         public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
-        # audience pinned; issuer intentionally not verified (multitenant).
+        # id_token aud = our client_id. Audience pinned; issuer intentionally not
+        # verified (any Microsoft account, so many issuers).
         claims = jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
-            audience=allowed_aud,
+            audience=client_id,
             options={"verify_iss": False},
         )
         return claims

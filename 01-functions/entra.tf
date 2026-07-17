@@ -12,31 +12,18 @@
 # instead of a service-principal secret. The proxy app and its long-lived
 # secret are gone.
 #
-# sign_in_audience = AzureADMultipleOrgs → any work or school Entra tenant can
-# sign in. That is the whole point of the /organizations authority in oauth.py.
+# sign_in_audience = AzureADandPersonalMicrosoftAccount → any work, school, OR
+# personal Microsoft account can sign in, via the /common authority in oauth.py.
+#
+# Personal accounts cannot consent to a custom api:// scope, so this app exposes
+# no API scope. The broker requests only OIDC scopes and hands Claude the
+# id_token (aud = this client_id), which mcp.py validates. That is the one path
+# that works uniformly across work, school, and personal accounts.
 # ==============================================================================
-
-resource "random_uuid" "mcp_scope" {}
 
 resource "azuread_application" "mcp" {
   display_name     = "oauth-mcp"
-  sign_in_audience = "AzureADMultipleOrgs"
-
-  # Issue v2 access tokens so the audience is this app's client ID.
-  api {
-    requested_access_token_version = 2
-
-    oauth2_permission_scope {
-      id                         = random_uuid.mcp_scope.id
-      value                      = "mcp.access"
-      type                       = "User"
-      enabled                    = true
-      admin_consent_display_name = "Access the MCP server"
-      admin_consent_description  = "Allow the signed-in user to call the MCP tools."
-      user_consent_display_name  = "Access the MCP server"
-      user_consent_description   = "Allow this app to call the MCP tools on your behalf."
-    }
-  }
+  sign_in_audience = "AzureADandPersonalMicrosoftAccount"
 
   # Confidential client: Entra returns the auth code to our own fixed callback.
   # The hostname is derived from the random suffix (not the function resource) to
@@ -46,14 +33,6 @@ resource "azuread_application" "mcp" {
       "https://oauth-mcp-func-${random_id.suffix.hex}.azurewebsites.net/oauth/callback"
     ]
   }
-}
-
-# App ID URI = api://<client_id>, so the exposed scope resolves to
-# api://<client_id>/mcp.access. Set as a separate resource to avoid a self-
-# reference on the application's own client_id.
-resource "azuread_application_identifier_uri" "mcp" {
-  application_id = azuread_application.mcp.id
-  identifier_uri = "api://${azuread_application.mcp.client_id}"
 }
 
 resource "azuread_service_principal" "mcp" {

@@ -17,10 +17,13 @@
 #      /oauth/register, Claude would have no client_id and the user would have to
 #      paste credentials by hand.
 #
-# The multitenant angle: the Entra app is registered AzureADMultipleOrgs and we
-# use the /organizations authority, so a user from ANY work or school Entra
-# tenant can sign in. mcp.py pins the token audience but deliberately does not
-# pin the issuer — that is what "any Microsoft work account" means.
+# The multitenant angle: the Entra app is registered
+# AzureADandPersonalMicrosoftAccount and we use the /common authority, so ANY
+# Microsoft account — work, school, or personal — can sign in. We request only
+# OIDC scopes (personal accounts cannot consent to a custom api:// scope) and
+# hand Claude the id_token. mcp.py pins the token audience (this client_id) but
+# deliberately does not pin the issuer — that is what "any Microsoft account"
+# means.
 #
 # Flow:
 #   1. GET  /.well-known/oauth-authorization-server — we are the auth server
@@ -52,11 +55,16 @@ from azure.cosmos import CosmosClient
 
 logger = logging.getLogger(__name__)
 
-# Entra endpoints. /organizations = any work/school tenant (no personal
-# accounts). Fixed, public, not user-controlled — the urlopen calls are safe.
-AUTHORITY        = "https://login.microsoftonline.com/organizations"
+# Entra endpoints. /common = any Microsoft account (work, school, personal).
+# Fixed, public, not user-controlled — the urlopen calls are safe.
+AUTHORITY        = "https://login.microsoftonline.com/common"
 ENTRA_AUTH_URL   = f"{AUTHORITY}/oauth2/v2.0/authorize"
 ENTRA_TOKEN_URL  = f"{AUTHORITY}/oauth2/v2.0/token"
+
+# OIDC scopes only. offline_access yields a refresh token; the id_token this
+# returns has aud = our client_id, which is what mcp.py validates. No custom
+# api:// scope, because personal Microsoft accounts cannot consent to one.
+OAUTH_SCOPE = "openid profile offline_access"
 
 PENDING_TTL_SECONDS = 300   # 5 minutes, for both pending-auth and auth-code docs
 
@@ -69,12 +77,6 @@ def _client_id() -> str:
 
 def _client_secret() -> str:
     return os.environ.get("MCP_ENTRA_CLIENT_SECRET", "")
-
-
-def _api_scope() -> str:
-    # The custom scope our own app exposes. Requesting it makes Entra issue an
-    # access token whose audience is this app, which mcp.py then validates.
-    return f"api://{_client_id()}/mcp.access"
 
 
 def _container():
@@ -260,10 +262,7 @@ def authorize(req):
     entra_auth = f"{ENTRA_AUTH_URL}?" + urllib.parse.urlencode({
         "client_id":     _client_id(),
         "response_type": "code",
-        # openid+profile identify the user; offline_access yields a refresh
-        # token; the api:// scope makes Entra mint an access token WE can
-        # validate (audience = this app).
-        "scope":         f"openid profile offline_access {_api_scope()}",
+        "scope":         OAUTH_SCOPE,
         "redirect_uri":  f"{_api_base(req)}/oauth/callback",
         "state":         session_id,
         "response_mode": "query",
@@ -302,18 +301,20 @@ def callback(req):
         "client_id":     _client_id(),
         "client_secret": _client_secret(),
         "redirect_uri":  f"{_api_base(req)}/oauth/callback",
-        "scope":         f"openid profile offline_access {_api_scope()}",
+        "scope":         OAUTH_SCOPE,
     })
 
-    if "access_token" not in tokens:
-        logger.error("Entra token exchange returned no access_token")
+    # We hand Claude the id_token — its audience is our client_id, and unlike a
+    # custom-scope access token it is issued uniformly to personal accounts too.
+    if "id_token" not in tokens:
+        logger.error("Entra token exchange returned no id_token")
         return _error("entra_exchange_failed", 502)
 
     auth_code = "az_" + secrets.token_urlsafe(32)
     container.upsert_item({
         "id":            auth_code,
         "kind":          "code",
-        "access_token":  tokens["access_token"],
+        "bearer":        tokens["id_token"],
         "refresh_token": tokens.get("refresh_token", ""),
         "expires_in":    tokens.get("expires_in", 3600),
         "expires_at":    _expiry_epoch(),
@@ -369,8 +370,9 @@ def token(req, raw_body: str):
 
     # No client authentication check: clients registered via /oauth/register use
     # auth method "none". The security boundary is the single-use code above.
+    # The bearer we return is the Entra id_token.
     body = {
-        "access_token": doc["access_token"],
+        "access_token": doc["bearer"],
         "token_type":   "Bearer",
         "expires_in":   doc.get("expires_in", 3600),
     }
@@ -381,7 +383,7 @@ def token(req, raw_body: str):
 
 
 def _refresh(params: dict):
-    """Exchange an Entra refresh token for a fresh access token."""
+    """Exchange an Entra refresh token for a fresh id_token."""
     refresh_token = (params.get("refresh_token") or "").strip()
     if not refresh_token:
         return _error("invalid_request", 400)
@@ -391,14 +393,14 @@ def _refresh(params: dict):
         "refresh_token": refresh_token,
         "client_id":     _client_id(),
         "client_secret": _client_secret(),
-        "scope":         f"openid profile offline_access {_api_scope()}",
+        "scope":         OAUTH_SCOPE,
     })
 
-    if "access_token" not in tokens:
+    if "id_token" not in tokens:
         return _error("invalid_grant", 400)
 
     return _json({
-        "access_token":  tokens["access_token"],
+        "access_token":  tokens["id_token"],
         "token_type":    "Bearer",
         "expires_in":    tokens.get("expires_in", 3600),
         # Entra may or may not rotate the refresh token; echo whichever we hold.
