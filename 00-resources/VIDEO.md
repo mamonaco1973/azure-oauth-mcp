@@ -39,5 +39,5 @@ https://github.com/mamonaco1973/azure-oauth-mcp/blob/main/README.md
 TIMESTAMPS
 00:00 Introduction
 00:39 Architecture
-01:35 Securing MCP
-02:39 Deploy It Yourself
+01:36 Securing MCP
+02:41 Deploy It Yourself
