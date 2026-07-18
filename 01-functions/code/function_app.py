@@ -60,7 +60,7 @@ def _base_url(req: func.HttpRequest) -> str:
 
 
 # ------------------------------------------------------------------------------
-# OAuth broker routes
+# OAuth broker routes 
 # ------------------------------------------------------------------------------
 
 @app.route(route=".well-known/oauth-authorization-server", methods=["GET", "OPTIONS"])
