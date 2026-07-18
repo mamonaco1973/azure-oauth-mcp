@@ -30,7 +30,7 @@ Claude (claude.ai / Claude Desktop)
      │  5. token:     POST /oauth/token
      │  6. use:       POST /mcp  (Bearer <entra access token>)
      ▼
-Azure Function (Flex Consumption) — one function, public, auth enforced in code
+Azure Function App (Flex Consumption) — public, auth enforced in code
      ├── oauth.py   OAuth broker  ── Cosmos DB (transient login state, 5-min TTL)
      ├── mcp.py     JSON-RPC; validates the Bearer token against Entra's JWKS
      └── tools.py   7 Resource Graph tools, called in-process
@@ -38,7 +38,7 @@ Azure Function (Flex Consumption) — one function, public, auth enforced in cod
      Azure Resource Graph API   (Managed Identity, subscription Reader)
 ```
 
-The function plays **two roles at once**. To Claude it *is* the OAuth
+The Function App plays **two roles at once**. To Claude it *is* the OAuth
 authorization server. To Microsoft Entra it is an ordinary OAuth *client*.
 
 ### Why a broker, and not just "point Claude at Entra"?
@@ -101,7 +101,7 @@ the model narrates a text table better than it parses one.
 ```
 
 **There is no console step.** Terraform creates the Entra app registration,
-wires its redirect URI to the function's own hostname, and stores its secret in
+wires its redirect URI to the Function App's own hostname, and stores its secret in
 Key Vault. `apply.sh` prints the `/mcp` URL when it finishes.
 
 Then in Claude: **Settings → Connectors → Add custom connector**, paste the URL.
@@ -131,7 +131,7 @@ regardless of which app requested the token.
 connection string — as `@Microsoft.KeyVault(...)` references, not plaintext app
 settings.
 
-**The function is public, and that is correct.** The OAuth endpoints cannot
+**The Function App is public, and that is correct.** The OAuth endpoints cannot
 require a token, and Claude probes `/mcp` unauthenticated on purpose to read the
 `WWW-Authenticate` pointer. So the door opens, and `mcp.py` enforces the token.
 

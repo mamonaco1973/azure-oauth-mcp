@@ -15,7 +15,7 @@ nothing to configure but a URL.**
 
 ## What This Project Does
 
-One Azure Function (Flex Consumption, Python 3.11) is the whole stack. It serves
+One Azure Function App (Flex Consumption, Python 3.11) is the whole stack. It serves
 the OAuth authorization-server endpoints **and** the MCP JSON-RPC endpoint, and
 calls the seven Resource Graph tools in-process on `tools/call`.
 
@@ -42,7 +42,7 @@ Claude (claude.ai / Claude Desktop) — remote MCP client
      │  5. token:     POST /oauth/token   (az_ code → Entra access token)
      │  6. use:       POST /mcp  (Authorization: Bearer <entra access token>)
      ▼
-Azure Function (Flex Consumption) — PUBLIC (AuthLevel.ANONYMOUS); code enforces auth
+Azure Function App (Flex Consumption) — PUBLIC (AuthLevel.ANONYMOUS); code enforces auth
      ├── function_app.py  route table (7 @app.route)
      ├── oauth.py         OAuth broker  ── Cosmos DB (transient login state, TTL)
      ├── mcp.py           JSON-RPC; validates Bearer via Entra JWKS (audience-pinned)
@@ -74,7 +74,7 @@ The token handed to Claude is a **genuine Entra id_token**. No custom crypto.
 
 ## Auth model — read this before changing anything
 
-**The function is public** (`AuthLevel.ANONYMOUS`), and it always was — FC1 has
+**The Function App is public** (`AuthLevel.ANONYMOUS`), and it always was — FC1 has
 no Easy Auth, so this project never had platform-enforced auth to invert (unlike
 the AWS and GCP ports). Auth is in `mcp.py`:
 
@@ -130,22 +130,23 @@ validate.sh          Unauthenticated smoke test of handshake + auth boundary
 ## The Entra app (one registration, created by Terraform)
 
 Unlike GCP — where the OAuth client is a manual console step — **Terraform
-creates the whole Entra app** and wires its redirect URI to the function's own
+creates the whole Entra app** and wires its redirect URI to the Function App's own
 hostname. There is no Azure Portal step.
 
 - `sign_in_audience = "AzureADandPersonalMicrosoftAccount"` — any Microsoft
   account (work, school, personal).
 - `requested_access_token_version = 2` (required for personal accounts). No API
   scope — the broker uses OIDC scopes and validates the id_token.
-- `web.redirect_uris` = the function's `/oauth/callback`.
+- `web.redirect_uris` = the Function App's `/oauth/callback`.
 - A client secret → Key Vault (never a plaintext app setting).
 
-The redirect URI is built from the **random suffix**, not the function resource,
-to avoid a dependency cycle (functions.tf reads the app's client_id in turn).
+The redirect URI is built from the **random suffix**, not the Function App
+resource, to avoid a dependency cycle (functions.tf reads the app's client_id
+in turn).
 
 ---
 
-## Environment variables (function)
+## Environment variables (Function App)
 
 | Var | Source | Used by |
 |-----|--------|---------|
