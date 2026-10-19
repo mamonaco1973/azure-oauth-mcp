@@ -6,7 +6,7 @@ Two files per diagram rather than one self-switching file: GitHub strips
 the document is silently dropped. The README pairs them with <picture>, which
 GitHub does honour.
 
-  architecture-{light,dark}.svg  — Claude, the Microsoft login, the Function
+  architecture-{light,dark}.svg  — Claude and ChatGPT, the Microsoft login, the Function
                                    App and the stores and API behind it
   http-surface-{light,dark}.svg  — the seven public routes and what guards each
 
@@ -26,7 +26,7 @@ THEMES = {
         "muted": "#8b949e", "line": "#58a6ff", "rule": "#30363d",
         "purple": "#c39be8", "green": "#3fb950", "blue": "#58a6ff",
         "amber": "#f2c163", "red": "#ff7b72", "navy": "#c8d6e8",
-        "pink": "#f778ba",
+        "pink": "#f778ba", "teal": "#39c5bb",
         "get_bg": "#12261a", "post_bg": "#0c2d4d", "pill_bg": "#21262d",
         "lock_bg": "#3a2c0c",
     },
@@ -35,7 +35,7 @@ THEMES = {
         "muted": "#59636e", "line": "#0969da", "rule": "#d1d9e0",
         "purple": "#8250df", "green": "#1a7f37", "blue": "#0969da",
         "amber": "#9a6700", "red": "#cf222e", "navy": "#475467",
-        "pink": "#bf3989",
+        "pink": "#bf3989", "teal": "#137e77",
         "get_bg": "#dafbe1", "post_bg": "#ddf4ff", "pill_bg": "#eaeef2",
         "lock_bg": "#fff8c5",
     },
@@ -85,17 +85,23 @@ TITLE_PX, SUB_PX, EDGE_PX = 24, 16, 16
 
 AZURE_BOX = (440, 30, 1030, 660)
 
+# The two clients share a container: the sign-in and the MCP calls are
+# identical for both — one URL, one broker.
+CLIENTS = (40, 215, 340, 310)              # x, y, w, h
+
 # id: (x, y, width, colour key, icon, title, subtitle)
 NODES = {
-    "claude":   (40, 322, 320, "purple", "bot", "Claude",
-                 "remote MCP client"),
+    "claude":   (60, 262, 300, "purple", "bot", "Claude",
+                 "custom connector"),
+    "chatgpt":  (60, 392, 300, "green", "message", "ChatGPT",
+                 "developer-mode app"),
     "entra":    (500, 80, 400, "blue", "shield", "Microsoft Entra",
                  "login.microsoftonline.com/common"),
     "function": (500, 322, 400, "amber", "zap", "Function App",
                  "oauth.py + mcp.py + tools.py"),
     "cosmos":   (500, 560, 210, "navy", "database", "Cosmos DB",
                  "login state, TTL"),
-    "keyvault": (720, 560, 180, "green", "lock", "Key Vault",
+    "keyvault": (720, 560, 180, "teal", "lock", "Key Vault",
                  "2 secrets"),
     "graph":    (1060, 322, 380, "pink", "network", "Resource Graph",
                  "7 read-only tools"),
@@ -120,16 +126,18 @@ def _down(a, b):
 
 
 _GAP = (_r("function")[2] + _r("graph")[0]) / 2
+_CX, _CY, _CW, _CH = CLIENTS
+_CMID = _CY + _CH / 2
 
 # id: (path, colour key, label, label_x, label_y, anchor, dashed, two_way)
 EDGES = {
-    "e_mcp":    (_h("claude", "function"), "line", "OAuth + MCP",
-                 (_r("claude")[2] + _r("function")[0]) / 2,
-                 _r("claude")[5] - 14, "middle", False, False),
-    "e_signin": (f"M{_r('claude')[4]},{_r('claude')[1]} V{_r('entra')[5]} "
+    "e_mcp":    (f"M{_CX + _CW},{_CMID} L{_r('function')[0] - 5},{_CMID}",
+                 "line", "OAuth + MCP", (_CX + _CW + _r("function")[0]) / 2,
+                 _CMID - 14, "middle", False, False),
+    "e_signin": (f"M{_CX + _CW / 2},{_CY} V{_r('entra')[5]} "
                  f"H{_r('entra')[0] - 5}", "blue",
                  "browser sign-in",
-                 _r("claude")[4] + 16, _r("entra")[5] - 14, "start",
+                 _CX + _CW / 2 + 16, _r("entra")[5] - 14, "start",
                  True, False),
     "e_auth":   (f"M{_r('function')[4]},{_r('function')[1] - 5} "
                  f"L{_r('function')[4]},{_r('entra')[3] + 5}", "blue",
@@ -138,7 +146,7 @@ EDGES = {
                  True, True),
     "e_state":  (_down("function", "cosmos"), "navy", "", 0, 0, "start",
                  False, False),
-    "e_secret": (_down("function", "keyvault"), "green", "", 0, 0, "start",
+    "e_secret": (_down("function", "keyvault"), "teal", "", 0, 0, "start",
                  False, False),
     "e_graph":  (_h("function", "graph"), "pink", "Managed Identity",
                  _GAP, _r("function")[5] - 14, "middle", False, False),
@@ -190,7 +198,7 @@ def edge_svg(eid, t):
 def build_architecture(t):
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{AW}" height="{AH}" '
            f'viewBox="0 0 {AW} {AH}" role="img" '
-           f'aria-label="Claude signs in with a Microsoft account and calls one '
+           f'aria-label="Claude and ChatGPT sign in with a Microsoft account and calls one '
            f'Azure Function App, which brokers OAuth with Entra, keeps login '
            f'state in Cosmos DB, reads secrets from Key Vault, and queries '
            f'Resource Graph with its managed identity">', "<defs>"]
@@ -210,6 +218,12 @@ def build_architecture(t):
     out.append(f'<text x="{bx + 20}" y="{by + 30}" font-family="{FONT}" '
                f'font-size="18" font-weight="600" fill="{t["muted"]}">'
                f'Azure · Central US</text>')
+
+    out.append(f'<rect x="{_CX}" y="{_CY}" width="{_CW}" height="{_CH}" rx="14" '
+               f'fill="none" stroke="{t["rule"]}" stroke-width="2"/>')
+    out.append(f'<text x="{_CX + 20}" y="{_CY + 32}" font-family="{FONT}" '
+               f'font-size="18" font-weight="600" fill="{t["muted"]}">'
+               f'MCP clients — same URL</text>')
 
     for eid in EDGES:
         out.append(edge_svg(eid, t))

@@ -1,6 +1,7 @@
 # Azure OAuth MCP — a remote MCP server on Azure Functions, secured with Entra
 
-Connect Claude directly to your Azure subscription. No local proxy. No
+Connect **Claude** or **ChatGPT** directly to your Azure subscription — both
+use the same URL. No local proxy. No
 service-principal secret in a config file. You paste one URL, log in with any
 Microsoft account — work, school, or personal — and the tools work.
 
@@ -23,12 +24,14 @@ JSON file. This version deletes it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
-  <img alt="Claude signs in with a Microsoft account and calls one Azure Function App. The Function App brokers OAuth with Entra, keeps transient login state in Cosmos DB, reads its secrets from Key Vault, and queries Azure Resource Graph with its managed identity" src="architecture-light.svg">
+  <img alt="Claude and ChatGPT sign in with a Microsoft account and call one Azure Function App. The Function App brokers OAuth with Entra, keeps transient login state in Cosmos DB, reads its secrets from Key Vault, and queries Azure Resource Graph with its managed identity" src="architecture-light.svg">
 </picture>
 
 Regenerate the diagrams with `python make_diagram.py`.
 
-1. **Probe** — Claude calls `POST /mcp` with no token and gets a 401 with a
+Claude and ChatGPT walk the same six steps:
+
+1. **Probe** — the client calls `POST /mcp` with no token and gets a 401 with a
    `WWW-Authenticate` header.
 2. **Discover** — `GET /.well-known/oauth-authorization-server` (RFC 8414).
 3. **Register** — `POST /oauth/register` (RFC 7591).
@@ -45,18 +48,19 @@ enforced in code:
 - `tools.py` — 7 Resource Graph tools, called in-process with the Function
   App's **Managed Identity** (subscription Reader)
 
-The Function App plays **two roles at once**. To Claude it *is* the OAuth
-authorization server. To Microsoft Entra it is an ordinary OAuth *client*.
+The Function App plays **two roles at once**. To the MCP client it *is* the
+OAuth authorization server. To Microsoft Entra it is an ordinary OAuth *client*.
 
-### Why a broker, and not just "point Claude at Entra"?
+### Why a broker, and not just "point the client at Entra"?
 
 Two gaps, neither ours to fix upstream:
 
-1. **claude.ai's redirect URI** isn't one Entra will accept, and Entra requires
+1. **The client's redirect URI** isn't one Entra will accept — claude.ai's
+   embeds your org ID, and ChatGPT's is per app — and Entra requires
    exact-match redirect URIs. The broker registers only its own fixed
-   `/oauth/callback` and carries Claude's URL through Cosmos.
+   `/oauth/callback` and carries the client's URL through Cosmos.
 2. **Entra has no dynamic client registration** (RFC 7591). Without a
-   `/oauth/register` endpoint, Claude has no `client_id` — and the user ends up
+   `/oauth/register` endpoint, the client has no `client_id` — and the user ends up
    pasting a client ID and secret by hand. That is the exact gap AWS AgentCore
    and Google leave open too. No cloud closes it for you.
 
@@ -65,10 +69,32 @@ Two gaps, neither ours to fix upstream:
 The Entra app is registered `AzureADandPersonalMicrosoftAccount` and the broker
 uses the `/common` authority, so **any** Microsoft account — work, school, or
 personal — can sign in. Personal accounts cannot consent to a custom `api://`
-scope, so the broker requests only OIDC scopes and hands Claude the **id_token**;
+scope, so the broker requests only OIDC scopes and hands the client the
+**id_token**;
 its audience is this app's client_id. Token validation pins that **audience**
 but not the **issuer** — with many tenants (plus the personal-account authority)
 there is no single issuer to pin.
+
+### PKCE — what ChatGPT needs
+
+ChatGPT refuses to create a connector unless the authorization-server metadata
+advertises PKCE (RFC 7636):
+
+```json
+"code_challenge_methods_supported": ["S256"]
+```
+
+Without it, ChatGPT fails with *"Some app settings were rejected. Check the
+server URL or tunnel ID, icon, and authentication settings"* — which reads like
+a URL problem but is not.
+
+With it, ChatGPT sends a `code_challenge` to `/authorize` and the matching
+`code_verifier` to `/oauth/token`. `oauth.py` carries the challenge through
+Cosmos alongside the one-time `az_` code and only releases the Entra token if
+`SHA-256(verifier)` matches. Only `S256` is accepted.
+
+Claude does not send a challenge today, so PKCE is enforced **only when the
+client starts it**. Making it mandatory would break the Claude connector.
 
 ---
 
@@ -118,11 +144,44 @@ the model narrates a text table better than it parses one.
 
 **There is no console step.** Terraform creates the Entra app registration,
 wires its redirect URI to the Function App's own hostname, and stores its secret in
-Key Vault. `apply.sh` prints the `/mcp` URL when it finishes.
+Key Vault. `apply.sh` prints the `/mcp` URL when it finishes:
 
-Then in Claude: **Settings → Connectors → Add custom connector**, paste the URL.
-Claude discovers the authorization server, registers itself, and sends you to
-Microsoft to log in. That is the entire configuration.
+```
+https://<function-app>.azurewebsites.net/mcp
+```
+
+That one URL is all either client needs. Get it again any time with:
+
+```bash
+(cd 01-functions && terraform output -raw mcp_url)
+```
+
+### Connect Claude
+
+1. In claude.ai: **Settings → Connectors → Add custom connector**.
+2. Give it a name and paste the MCP URL. Leave the advanced OAuth client ID /
+   secret fields empty — Claude registers itself.
+3. Click **Add**, then **Connect**. Claude sends you to Microsoft to log in with
+   any Microsoft account — the seven Resource Graph tools appear.
+
+### Connect ChatGPT
+
+1. In ChatGPT: **Settings → Apps & Connectors → Advanced settings** and turn on
+   **Developer mode**.
+2. Back in **Apps & Connectors**, click **Create**.
+3. Fill in the form:
+   * **Name** — e.g. `Azure Resources`
+   * **MCP Server URL** — the MCP URL
+   * **Authentication** — **OAuth** (leave client ID / secret empty; ChatGPT
+     registers itself)
+   * Tick **I trust this application**
+4. Click **Create**. ChatGPT sends you to Microsoft to log in — the seven
+   Resource Graph tools are listed on the app.
+5. In a new chat, pick the app from the **+** menu (Developer mode) and ask
+   about your Azure resources.
+
+> Both clients call the same Function App, and the tools run as its managed
+> identity — so Claude and ChatGPT see the same subscription either way.
 
 ---
 
@@ -148,7 +207,7 @@ connection string — as `@Microsoft.KeyVault(...)` references, not plaintext ap
 settings.
 
 **The Function App is public, and that is correct.** The OAuth endpoints cannot
-require a token, and Claude probes `/mcp` unauthenticated on purpose to read the
+require a token, and the client probes `/mcp` unauthenticated on purpose to read the
 `WWW-Authenticate` pointer. So the door opens, and `mcp.py` enforces the token.
 
 ---

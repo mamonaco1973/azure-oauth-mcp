@@ -1,7 +1,7 @@
 # CLAUDE.md — azure-oauth-mcp
 
 An Azure Resource Graph API exposed as a **remote MCP connector** secured with
-**Microsoft Entra OAuth**. Claude connects directly to a remote `/mcp` endpoint,
+**Microsoft Entra OAuth**. Claude or ChatGPT connects directly to a remote `/mcp` endpoint,
 the user logs in with any Microsoft account (work, school, or personal), and the
 tools run — **no local proxy, no service-principal secret on your laptop,
 nothing to configure but a URL.**
@@ -69,6 +69,17 @@ the root, so the prefix is removed. The connector URL is
    Google. The `/oauth/register` shim closes it.
 
 The token handed to Claude is a **genuine Entra id_token**. No custom crypto.
+
+### PKCE (ChatGPT)
+
+ChatGPT will not create a connector unless `/.well-known/oauth-authorization-server`
+advertises `code_challenge_methods_supported: ["S256"]` — it fails with the
+misleading "Some app settings were rejected. Check the server URL or tunnel ID,
+icon, and authentication settings". It then sends a real challenge and verifier.
+Claude sends neither. `oauth.py` stores the challenge on the pending and `az_`
+Cosmos records and checks the verifier at `/oauth/token` only when a challenge
+was supplied (S256 only; `plain` → 400), so both clients work. Confirmed
+working with ChatGPT 2026-10-18.
 
 ---
 
@@ -173,6 +184,8 @@ startup — the portal shows the reference, not the value.
   issuer breaks every account but your own tenant's.
 - **Key Vault soft-delete.** `destroy.sh` purges the vault (main.tf enables
   `purge_soft_delete_on_destroy`) so a re-apply doesn't hit a name conflict.
+- **PKCE is mandatory for ChatGPT, optional for Claude.** Do not make it
+  unconditional without checking Claude still connects.
 - **Don't attach Easy Auth / an authorizer to `/mcp`.** Same lesson as the
   siblings: the flow breaks before a token exists.
 - README diagrams are generated SVG pairs (`python make_diagram.py` →
