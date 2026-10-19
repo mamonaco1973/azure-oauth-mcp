@@ -123,6 +123,7 @@ check_env.sh         Pre-flight: az/terraform/jq/zip + ARM_ vars; az login
 apply.sh             Deploy + code push + validate + print connector URL
 destroy.sh           Teardown (Key Vault purged)
 validate.sh          Unauthenticated smoke test of handshake + auth boundary
+make_diagram.py      Generates the README's light/dark SVG diagrams
 ```
 
 ---
@@ -174,8 +175,9 @@ startup — the portal shows the reference, not the value.
   `purge_soft_delete_on_destroy`) so a re-apply doesn't hit a name conflict.
 - **Don't attach Easy Auth / an authorizer to `/mcp`.** Same lesson as the
   siblings: the flow breaks before a token exists.
-- The `.drawio` / `.png` diagrams and `00-resources/` still depict the old
-  proxy design — regenerate before reusing them.
+- README diagrams are generated SVG pairs (`python make_diagram.py` →
+  `architecture-` / `http-surface-{light,dark}.svg`) — edit the script and rerun
+  it rather than hand-editing the SVGs.
 
 ## Code Commenting Standards
 

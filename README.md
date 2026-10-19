@@ -21,22 +21,29 @@ JSON file. This version deletes it.
 
 ## Architecture
 
-```
-Claude (claude.ai / Claude Desktop)
-     │  1. probe:     POST /mcp with no token → 401 + WWW-Authenticate
-     │  2. discover:  GET  /.well-known/oauth-authorization-server   (RFC 8414)
-     │  3. register:  POST /oauth/register                           (RFC 7591)
-     │  4. login:     GET  /authorize → login.microsoftonline.com → /oauth/callback
-     │  5. token:     POST /oauth/token
-     │  6. use:       POST /mcp  (Bearer <entra access token>)
-     ▼
-Azure Function App (Flex Consumption) — public, auth enforced in code
-     ├── oauth.py   OAuth broker  ── Cosmos DB (transient login state, 5-min TTL)
-     ├── mcp.py     JSON-RPC; validates the Bearer token against Entra's JWKS
-     └── tools.py   7 Resource Graph tools, called in-process
-                    ▼
-     Azure Resource Graph API   (Managed Identity, subscription Reader)
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
+  <img alt="Claude signs in with a Microsoft account and calls one Azure Function App. The Function App brokers OAuth with Entra, keeps transient login state in Cosmos DB, reads its secrets from Key Vault, and queries Azure Resource Graph with its managed identity" src="architecture-light.svg">
+</picture>
+
+Regenerate the diagrams with `python make_diagram.py`.
+
+1. **Probe** — Claude calls `POST /mcp` with no token and gets a 401 with a
+   `WWW-Authenticate` header.
+2. **Discover** — `GET /.well-known/oauth-authorization-server` (RFC 8414).
+3. **Register** — `POST /oauth/register` (RFC 7591).
+4. **Login** — `GET /authorize` → login.microsoftonline.com → `/oauth/callback`.
+5. **Token** — `POST /oauth/token`.
+6. **Use** — `POST /mcp` with `Authorization: Bearer <entra token>`.
+
+One **Function App** (Flex Consumption) does all of it — public, with auth
+enforced in code:
+
+- `oauth.py` — the OAuth broker, with transient login state in **Cosmos DB**
+  (5-min TTL)
+- `mcp.py` — JSON-RPC; validates the Bearer token against Entra's JWKS
+- `tools.py` — 7 Resource Graph tools, called in-process with the Function
+  App's **Managed Identity** (subscription Reader)
 
 The Function App plays **two roles at once**. To Claude it *is* the OAuth
 authorization server. To Microsoft Entra it is an ordinary OAuth *client*.
@@ -79,6 +86,15 @@ there is no single issuer to pin.
 
 Responses are pre-formatted plain text — Resource Graph returns nested JSON, and
 the model narrates a text table better than it parses one.
+
+---
+
+## HTTP surface
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="http-surface-dark.svg">
+  <img alt="Six public OAuth routes and one protected /mcp route that requires an Entra Bearer token" src="http-surface-light.svg">
+</picture>
 
 ---
 

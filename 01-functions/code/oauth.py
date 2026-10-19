@@ -35,14 +35,24 @@
 #   6. POST /mcp             — Bearer is a real Entra access token, validated in
 #                              mcp.py against the Entra JWKS with an audience pin
 #
+# PKCE (RFC 7636): ChatGPT refuses to create a connector unless discovery
+# advertises code_challenge_methods_supported with S256 ("Some app settings were
+# rejected"), then sends a real challenge and verifier. Claude sends neither
+# today, so the verifier is checked only when a challenge was supplied — making
+# it unconditional would break the Claude connector.
+#
 # The token handed to Claude is a genuine Entra access token. We mint no JWTs and
 # hold no signing keys — there is no custom crypto in this file.
 #
 # Cosmos records (container TTL sweeps them; also deleted on use):
-#   id=<session>   kind=pending  — Claude's redirect_uri + state, pre-login
-#   id=az_<code>   kind=code     — Entra tokens, one-time use, post-login
+#   id=<session>   kind=pending  — Claude's redirect_uri + state + PKCE
+#                                  challenge, pre-login
+#   id=az_<code>   kind=code     — Entra tokens + PKCE challenge, one-time use,
+#                                  post-login
 # ==============================================================================
 
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -188,6 +198,9 @@ def authorization_server_metadata(req):
         "response_types_supported":              ["code"],
         "scopes_supported":                      ["openid", "profile"],
         "token_endpoint_auth_methods_supported": ["none"],
+        # Required by ChatGPT, which refuses to create the connector without it.
+        # Only S256 is offered: "plain" defeats the point of PKCE.
+        "code_challenge_methods_supported":      ["S256"],
     })
 
 
@@ -241,21 +254,27 @@ def authorize(req):
     redirect_uri  = (params.get("redirect_uri")  or "").strip()
     state         = params.get("state")          or ""
     response_type = params.get("response_type")  or ""
+    challenge     = (params.get("code_challenge")        or "").strip()
+    method        = (params.get("code_challenge_method") or "").strip()
 
     if response_type != "code":
         return _error("unsupported_response_type", 400)
     if not redirect_uri:
         return _error("invalid_request", 400)
+    # Only S256 is advertised, so anything else is a client that ignored the
+    # metadata. Accepting "plain" would let an interceptor of the challenge
+    # redeem the code, which is the attack PKCE exists to stop.
+    if challenge and method != "S256":
+        return _error("invalid_request", 400)
 
-    # PKCE params from Claude are accepted and ignored: the code we hand back is
-    # single-use and consumed server-side, so there is no interception window
-    # for PKCE to close. The Entra leg is protected by the client secret.
     session_id = secrets.token_urlsafe(16)
     _container().upsert_item({
         "id":           session_id,
         "kind":         "pending",
         "redirect_uri": redirect_uri,
         "state":        state,
+        # Empty for a client that sent none (Claude, today).
+        "challenge":    challenge,
         "expires_at":   _expiry_epoch(),
     })
 
@@ -317,6 +336,9 @@ def callback(req):
         "bearer":        tokens["id_token"],
         "refresh_token": tokens.get("refresh_token", ""),
         "expires_in":    tokens.get("expires_in", 3600),
+        # Moved from the pending record: /oauth/token verifies against the code
+        # being redeemed, and the pending record is deleted below.
+        "challenge":     pending.get("challenge", ""),
         "expires_at":    _expiry_epoch(),
     })
     _safe_delete(container, session_id)
@@ -335,6 +357,16 @@ def callback(req):
 # ==============================================================================
 # Token — POST /oauth/token
 # ==============================================================================
+
+def _s256(verifier: str) -> str:
+    """Return the RFC 7636 S256 challenge for a verifier.
+
+    base64url, unpadded — the padding characters are not part of the
+    challenge, and comparing against a padded value never matches.
+    """
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
 
 def token(req, raw_body: str):
     """Issue tokens to Claude.
@@ -368,8 +400,19 @@ def token(req, raw_body: str):
     if _is_expired(doc):
         return _error("invalid_grant", 400)
 
+    # PKCE, when the client started one. A challenge without a verifier, or a
+    # verifier that does not hash to it, means this is not the client that
+    # asked for the code. The code is already burned, so no retry.
+    challenge = doc.get("challenge", "")
+    if challenge:
+        verifier = (params.get("code_verifier") or "").strip()
+        if not verifier or _s256(verifier) != challenge:
+            logger.warning("token: PKCE verification failed")
+            return _error("invalid_grant", 400)
+
     # No client authentication check: clients registered via /oauth/register use
-    # auth method "none". The security boundary is the single-use code above.
+    # auth method "none". The security boundary is the single-use code above,
+    # bound to its requester by PKCE when the client used it.
     # The bearer we return is the Entra id_token.
     body = {
         "access_token": doc["bearer"],
