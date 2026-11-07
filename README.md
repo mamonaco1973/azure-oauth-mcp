@@ -195,7 +195,14 @@ That is an acceptable trade in a demo and a bad one anywhere else — to lock it
 down, filter on the `tid` (tenant) or `preferred_username` claim in
 `mcp._resolve_user`.
 
-Three things this build gets right:
+Four things this build gets right:
+
+**Login codes only go to known clients.** `/authorize` sends the code only to
+the ChatGPT, Claude and Gemini callbacks (plus loopback, for CLI clients) in
+`oauth.DEFAULT_REDIRECTS`. Without that, anyone could build a login link that
+returns a victim's code to their own site. To add another MCP client, put its
+callback in the `ALLOWED_REDIRECT_URIS` app setting (comma-separated; a
+trailing `*` is a prefix match). A rejected callback is logged.
 
 **The token's audience is pinned.** `_resolve_user` rejects any id_token whose
 `aud` is not this app's `client_id`. Without it, a valid Entra token minted for

@@ -78,6 +78,24 @@ OAUTH_SCOPE = "openid profile offline_access"
 
 PENDING_TTL_SECONDS = 300   # 5 minutes, for both pending-auth and auth-code docs
 
+# Where /authorize may send a login code. Without this list anyone could build
+# an /authorize link that returns a victim's code to their own site, then trade
+# it for the victim's token. Registration can't be the gate: an attacker can
+# register their own address first. A trailing * is a prefix match, for
+# clients whose callback path varies per connector.
+DEFAULT_REDIRECTS = [
+    "https://chatgpt.com/connector*",
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    # Gemini relays its callbacks through Google's redirect host.
+    "https://oauth-redirect.googleusercontent.com/r/*",
+    "https://oauth-redirect.googleusercontent.com/a/*",
+]
+
+# Native and CLI clients listen on a loopback port of their choosing (RFC
+# 8252). Only the user's own machine can receive these, so any port is fine.
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
 _cosmos_container = None
 
 
@@ -138,6 +156,33 @@ def _expiry_epoch() -> int:
 
 def _is_expired(doc: dict) -> bool:
     return int(time.time()) > int(doc.get("expires_at", 0))
+
+
+def _redirect_allowed(uri: str) -> bool:
+    """Return True if uri is a callback this server may send a code to.
+
+    Args:
+        uri: The redirect_uri the client sent to /authorize.
+
+    Returns:
+        True for a loopback address, or a match against DEFAULT_REDIRECTS
+        plus any extra entries in the comma-separated ALLOWED_REDIRECT_URIS
+        app setting (so another MCP client can be added without a redeploy).
+    """
+    parsed = urllib.parse.urlsplit(uri)
+    if parsed.scheme == "http" and parsed.hostname in (
+            h.strip("[]") for h in LOOPBACK_HOSTS):
+        return True
+    extra = os.environ.get("ALLOWED_REDIRECT_URIS", "")
+    allowed = DEFAULT_REDIRECTS + [e.strip() for e in extra.split(",")
+                                   if e.strip()]
+    for entry in allowed:
+        if entry.endswith("*"):
+            if uri.startswith(entry[:-1]):
+                return True
+        elif uri == entry:
+            return True
+    return False
 
 
 def _post_form(url: str, fields: dict) -> dict:
@@ -272,6 +317,10 @@ def authorize(req):
         return _error("unsupported_response_type", 400)
     if not redirect_uri:
         return _error("invalid_request", 400)
+    if not _redirect_allowed(redirect_uri):
+        # Logged so a new client's callback can be added to the app setting.
+        logger.warning("authorize: redirect_uri not allowed: %s", redirect_uri)
+        return _error("invalid_request", 400)
     # Only S256 is advertised, so anything else is a client that ignored the
     # metadata. Accepting "plain" would let an interceptor of the challenge
     # redeem the code, which is the attack PKCE exists to stop.
@@ -405,8 +454,13 @@ def token(req, raw_body: str):
     except Exception:
         return _error("invalid_grant", 400)
 
-    # One-time use — burn the code before returning, valid or not.
-    _safe_delete(container, code)
+    # One-time use — burn the code before returning, valid or not. The delete
+    # is the lock: two concurrent redeems can both read the doc, but only one
+    # delete succeeds, so the loser must not get a token.
+    try:
+        container.delete_item(item=code, partition_key=code)
+    except Exception:
+        return _error("invalid_grant", 400)
 
     if _is_expired(doc):
         return _error("invalid_grant", 400)
