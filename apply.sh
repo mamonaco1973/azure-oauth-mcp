@@ -29,8 +29,6 @@ terraform apply -auto-approve
 
 RESOURCE_GROUP=$(terraform output -raw resource_group_name)
 FUNC_APP_NAME=$(terraform output -raw function_app_name)
-MCP_URL=$(terraform output -raw mcp_url)
-CLIENT_ID=$(terraform output -raw entra_client_id)
 cd ..
 
 echo "NOTE: Resource group: ${RESOURCE_GROUP}"
@@ -64,30 +62,3 @@ cd ../..
 
 echo "NOTE: Running post-deployment validation..."
 ./validate.sh
-
-# ==============================================================================
-# Connector instructions
-# ==============================================================================
-
-cat <<EOF
-
-================================================================================
-  Deployment complete.
-================================================================================
-
-  Connect Claude
-  --------------
-  Settings -> Connectors -> Add custom connector, and paste:
-
-      ${MCP_URL}
-
-  That is the whole configuration. No client ID, no secret, no key file, and
-  no local proxy. Claude discovers the authorization server, registers itself,
-  and sends you to Microsoft to log in.
-
-  The Entra app (client ${CLIENT_ID}) is multitenant, so anyone with a work or
-  school Microsoft account can sign in. Terraform created it and wired its
-  redirect URI — there is no Azure Portal step.
-
-================================================================================
-EOF

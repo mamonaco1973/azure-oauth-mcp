@@ -18,6 +18,7 @@ echo "NOTE: Reading deployment outputs..."
 
 cd 01-functions
 BASE_URL=$(terraform output -raw function_base_url)
+MCP_URL=$(terraform output -raw mcp_url)
 cd ..
 
 echo "NOTE: Base URL: ${BASE_URL}"
@@ -99,9 +100,28 @@ echo "NOTE: Authorization server metadata:"
 curl -s "${BASE_URL}/.well-known/oauth-authorization-server" \
   | jq . | sed 's/^/       /'
 
-echo ""
-echo "========================================================================"
-echo "  Validation complete — handshake works, tools are protected."
-echo "========================================================================"
-echo "  Connector URL: ${BASE_URL}/mcp"
-echo "========================================================================"
+# ==============================================================================
+# Connector instructions
+# ==============================================================================
+
+cat <<EOF
+
+================================================================================
+  Validation complete — handshake works, tools are protected.
+================================================================================
+
+  Connect Claude
+  --------------
+  Settings -> Connectors -> Add custom connector, and paste:
+
+      ${MCP_URL}
+
+  Connect ChatGPT
+  ---------------
+  Settings -> Apps & Connectors -> Advanced settings -> Developer mode on,
+  then Create, and paste the same URL with Authentication set to OAuth:
+
+      ${MCP_URL}
+
+================================================================================
+EOF
