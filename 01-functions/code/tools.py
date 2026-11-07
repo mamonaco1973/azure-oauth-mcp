@@ -130,6 +130,11 @@ TOOL_REGISTRY = [
     },
 ]
 
+# Every tool only reads Resource Graph. Without the MCP readOnlyHint, ChatGPT
+# files all seven under "Write" and treats each call as a change.
+for _tool in TOOL_REGISTRY:
+    _tool["annotations"] = {"readOnlyHint": True}
+
 
 # ==============================================================================
 # Resource Graph helper

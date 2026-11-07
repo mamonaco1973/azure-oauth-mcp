@@ -230,12 +230,21 @@ def register(req):
     client secret stays server-side and is never sent to the client.
     """
     base = _api_base(req)
+    # RFC 7591: the response states what was registered, and Gemini refuses
+    # the connection unless its own redirect URI is in it. Echo the client's
+    # list -- /authorize already accepts any redirect_uri, so this registers
+    # nothing new. Clients that send none get the old answer.
+    try:
+        asked = req.get_json().get("redirect_uris") or []
+    except (ValueError, AttributeError):
+        asked = []
+    redirects = [u for u in asked if isinstance(u, str) and u.strip()]
     return _json({
         "client_id":                  _client_id(),
         "token_endpoint_auth_method": "none",
         "grant_types":                ["authorization_code", "refresh_token"],
         "response_types":             ["code"],
-        "redirect_uris":              [f"{base}/oauth/callback"],
+        "redirect_uris":              redirects or [f"{base}/oauth/callback"],
     }, status=201)
 
 
