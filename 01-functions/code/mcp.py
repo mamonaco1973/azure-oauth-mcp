@@ -110,7 +110,8 @@ def unauthorized(base_url: str):
     Claude probes /mcp with no token precisely to read this header, so this
     response is part of the happy path, not just an error case.
     """
-    resource_metadata = f"{base_url}/.well-known/oauth-protected-resource"
+    # Path-aware (RFC 9728) URL for the resource at /mcp; Gemini needs it.
+    resource_metadata = f"{base_url}/.well-known/oauth-protected-resource/mcp"
     return (
         json.dumps({"error": "unauthorized"}),
         401,

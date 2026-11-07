@@ -212,7 +212,9 @@ def protected_resource_metadata(req):
     """Point the MCP client at the authorization server guarding /mcp."""
     base = _api_base(req)
     return _json({
-        "resource":              base,
+        # RFC 9728: the resource is the MCP endpoint itself, not the host.
+        # Gemini drops out after login when this is the bare host.
+        "resource":              f"{base}/mcp",
         "authorization_servers": [base],
         "scopes_supported":      ["openid", "profile"],
     })

@@ -78,6 +78,7 @@ echo ""
 # completely unauthenticated, or the connector can never bootstrap.
 expect "discovery (RFC 8414)"    200 GET  "/.well-known/oauth-authorization-server"
 expect "resource metadata"       200 GET  "/.well-known/oauth-protected-resource"
+expect "resource metadata (/mcp)" 200 GET  "/.well-known/oauth-protected-resource/mcp"
 expect "registration (RFC 7591)" 201 POST "/oauth/register" \
   -H "Content-Type: application/json" -d '{}'
 

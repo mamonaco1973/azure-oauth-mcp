@@ -21,6 +21,7 @@
 # HTTP surface:
 #   GET  /.well-known/oauth-authorization-server  — RFC 8414 discovery
 #   GET  /.well-known/oauth-protected-resource    — RFC 9728 resource metadata
+#   GET  /.well-known/oauth-protected-resource/mcp — same, path-aware form
 #   POST /oauth/register                          — RFC 7591 registration
 #   GET  /authorize                               — redirect to Entra login
 #   GET  /oauth/callback                          — Entra returns here
@@ -72,6 +73,16 @@ def as_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route=".well-known/oauth-protected-resource", methods=["GET", "OPTIONS"])
 def pr_metadata(req: func.HttpRequest) -> func.HttpResponse:
+    if req.method == "OPTIONS":
+        return _preflight()
+    return _respond(oauth.protected_resource_metadata(req))
+
+
+# RFC 9728 path-aware form for a resource at /mcp. Gemini looks here; the
+# root route above stays for clients that only probe the host.
+@app.route(route=".well-known/oauth-protected-resource/mcp",
+           methods=["GET", "OPTIONS"])
+def pr_metadata_mcp(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "OPTIONS":
         return _preflight()
     return _respond(oauth.protected_resource_metadata(req))
